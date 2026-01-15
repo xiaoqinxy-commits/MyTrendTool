@@ -11,17 +11,22 @@ from googletrans import Translator
 from scrapers import reuters_bot, bloomberg_bot, x_musk_bot
 
 
-def fetch_feed(url: str, use_proxy: bool, proxy: str):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    if use_proxy and not os.environ.get('STREAMLIT_RUNTIME_ENV'):
-        proxies = {'http': proxy, 'https': proxy}
-        try:
-            r = requests.get(url, headers=headers, proxies=proxies, timeout=15)
-            r.raise_for_status()
-            return feedparser.parse(r.content)
-        except Exception:
-            return feedparser.parse('')
-    else:
+def fetch_feed(url, use_proxy: bool, proxy: str):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    
+    # 自动判断：如果在云端，强制不使用代理
+    is_cloud = os.environ.get('STREAMLIT_RUNTIME_ENV') or os.environ.get('HOSTNAME')
+    actual_proxies = None
+    if use_proxy and not is_cloud:
+        actual_proxies = {'http': proxy, 'https': proxy}
+        
+    try:
+        # 无论是否用代理，都必须带上 headers (面具)
+        r = requests.get(url, headers=headers, proxies=actual_proxies, timeout=15)
+        r.raise_for_status()
+        return feedparser.parse(r.content)
+    except Exception as e:
+        # 如果报错了，尝试最基础的抓取
         return feedparser.parse(url)
 
 
