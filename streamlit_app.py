@@ -5,299 +5,164 @@ import os
 import platform
 from datetime import datetime
 from typing import List, Dict
-
 from googletrans import Translator
 
-from scrapers import reuters_bot, bloomberg_bot, x_musk_bot
-
-
-def fetch_feed(url, use_proxy: bool, proxy: str):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-    
-    # 自动判断：如果在云端，强制不使用代理
-    is_cloud = os.environ.get('STREAMLIT_RUNTIME_ENV') or os.environ.get('HOSTNAME')
-    actual_proxies = None
-    if use_proxy and not is_cloud:
-        actual_proxies = {'http': proxy, 'https': proxy}
-        
-    try:
-        # 无论是否用代理，都必须带上 headers (面具)
-        r = requests.get(url, headers=headers, proxies=actual_proxies, timeout=15)
-        r.raise_for_status()
-        return feedparser.parse(r.content)
-    except Exception as e:
-        # 如果报错了，尝试最基础的抓取
-        return feedparser.parse(url)
-
-
-def parse_published(entry) -> str:
-    # 尝试多种字段返回 ISO 格式或人类可读时间
-    if 'published' in entry:
-        return entry.published
-    if 'updated' in entry:
-        return entry.updated
-    return ''
-
-
-def translate_list(texts: List[str]) -> List[str]:
-    try:
-        translator = Translator()
-        res = []
-        for t in texts:
-            if not t:
-                res.append('')
-                continue
-            try:
-                tr = translator.translate(t, dest='zh-cn')
-                res.append(tr.text)
-            except Exception:
-                res.append('')
-        return res
-    except Exception:
-        return ['' for _ in texts]
-
-
-st.set_page_config(page_title='TrendTool', layout='centered')
-
+# --- 核心配置与工具函数 ---
 
 def running_in_cloud() -> bool:
-    """尝试检测是否运行在云端（Streamlit Cloud / 常见 CI / 托管平台）。
-    检测常见环境变量；如果能匹配则认为是在云端运行。
-    该函数是启发式的——在需要时可以在 Streamlit Cloud 的 Settings 中设置
-    环境变量 `STREAMLIT_CLOUD=1` 以确保被识别为云端。
-    """
-    cloud_indicators = [
-        'GITHUB_ACTIONS', 'RENDER', 'VERCEL', 'HEROKU', 'STREAMLIT_CLOUD',
-        'STREAMLIT_APP', 'CODESPACES', 'CI', 'DATABRICKS'
-    ]
+    """自动检测是否运行在云端"""
+    cloud_indicators = ['STREAMLIT_RUNTIME_ENV', 'STREAMLIT_CLOUD', 'GITHUB_ACTIONS', 'HOSTNAME']
     for v in cloud_indicators:
         if os.environ.get(v):
             return True
-    # 本地 Windows 系统较大概率是开发机，优先判定为本地运行
-    if platform.system() == 'Windows':
-        return False
-    # 无明确云端信号时，默认视为本地（保守策略）
-    return False
+    return platform.system() != 'Windows'
 
 IS_CLOUD = running_in_cloud()
 
+def safe_translate(text: str) -> str:
+    """保险丝翻译：翻译失败时返回原文，绝不卡死页面"""
+    if not text:
+        return ""
+    try:
+        # 设置短超时，防止云端网络阻塞
+        translator = Translator()
+        return translator.translate(text, dest='zh-cn').text
+    except Exception:
+        return text # 失败则返回原英文
+
+def fetch_feed(url, use_proxy: bool, proxy: str):
+    """带面具的抓取函数：自动处理代理与请求头"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    actual_proxies = None
+    # 仅在非云端且用户勾选时使用代理
+    if use_proxy and not IS_CLOUD:
+        actual_proxies = {'http': proxy, 'https': proxy}
+        
+    try:
+        r = requests.get(url, headers=headers, proxies=actual_proxies, timeout=10)
+        r.raise_for_status()
+        return feedparser.parse(r.content)
+    except Exception:
+        return feedparser.parse(url)
+
+def parse_published(entry) -> str:
+    if 'published' in entry: return entry.published
+    if 'updated' in entry: return entry.updated
+    return ''
+
+# --- 界面初始化 ---
+
+st.set_page_config(page_title='TrendTool', layout='centered')
+
+# CSS 注入：解决手机端标题换行与卡片样式
 st.markdown("""
 <style>
-/* Force center and mobile-width container */
-.app-container {max-width:500px; width:100%; margin:0 auto;}
-html, body {overflow-x:hidden; background:#f3f4f6;}
-
-/* Card style and spacing */
-.news-card {background:#fff; border-radius:12px; box-shadow:0 6px 18px rgba(15,23,42,0.08); padding:20px; margin-bottom:15px;}
-.news-card a {color:#1a73e8; font-weight:700; font-size:1.05rem; text-decoration:none;}
-.orig-title {color:#6b7280; font-size:0.95rem; margin-top:8px;}
-.news-meta {color:#9ca3af; font-size:0.85rem; margin-top:8px;}
-.news-summary {color:#374151; font-size:0.95rem; margin-top:8px;}
-
-/* Section headers */
-.section-header{background:#f8fafc; border-left:4px solid #1a73e8; padding:8px 12px; border-radius:6px;}
-
-/* small adjustments to Streamlit markdown containers */
-.stMarkdown {padding:20px;}
-
-/* Hide Streamlit footer and menu for cleaner mobile feel */
-footer {visibility:hidden;}
-#MainMenu {visibility:hidden;}
-
-/* Responsive tweaks */
-@media (max-width:480px) {
-    .news-card {padding:16px;}
-    .news-card a {font-size:1.05rem}
-}
-/* App title: smaller, single-line, no-wrap */
+.app-container {max-width:500px; margin:0 auto;}
+/* 标题美化：强制不换行 */
 .app-title {
-    font-size:26px; /* 24-28px 推荐值 */
+    font-size:24px;
     font-weight:700;
-    white-space:nowrap; /* 强制一行显示，绝不换行 */
+    white-space:nowrap;
     overflow:hidden;
     text-overflow:ellipsis;
-    margin:8px 0 14px 0; /* 上下间距更精致 */
+    margin:10px 0;
+    text-align:center;
 }
+.news-card {background:#fff; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08); padding:18px; margin-bottom:15px; border:1px solid #eee;}
+.news-card a {color:#1a73e8; font-weight:700; text-decoration:none; font-size:1.1rem;}
+.orig-title {color:#6b7280; font-size:0.85rem; margin-top:5px; line-height:1.2;}
+.news-summary {color:#374151; font-size:0.9rem; margin-top:8px;}
+.news-meta {color:#9ca3af; font-size:0.8rem; margin-top:8px;}
+.section-header{border-left:4px solid #1a73e8; padding-left:10px; margin:20px 0 10px 0; font-size:1.2rem;}
+footer {visibility:hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="app-container">', unsafe_allow_html=True)
 st.markdown("<div class='app-title'>TrendTool — 要闻聚合</div>", unsafe_allow_html=True)
 
-# Top collapsible settings
-with st.expander('⚙️ 设置', expanded=False):
+# 设置区域
+with st.expander('⚙️ 运行设置', expanded=False):
     if IS_CLOUD:
-        st.info('检测到云端运行：已自动禁用代理（Streamlit Cloud 通常不需要本地代理）')
-    # 默认在本地启用代理，云端则禁用
-    use_proxy = st.checkbox('使用代理', value=(not IS_CLOUD), help='启用时将通过代理地址请求 RSS', disabled=IS_CLOUD)
-    default_proxy = '' if IS_CLOUD else 'http://127.0.0.1:7897'
-    proxy = st.text_input('代理地址', value=default_proxy, disabled=IS_CLOUD)
-    limit = st.slider('每源最大条目数', min_value=1, max_value=10, value=5)
-    refresh = st.button('抓取/刷新')
+        st.info('☁️ 已自动切换至云端直连模式')
+    use_proxy = st.checkbox('使用本地代理', value=(not IS_CLOUD), disabled=IS_CLOUD)
+    proxy_addr = st.text_input('代理地址', value='http://127.0.0.1:7897', disabled=IS_CLOUD)
+    limit = st.slider('获取条数', 1, 10, 5)
+    refresh = st.button('立即刷新数据')
 
-if 'last_run' not in st.session_state:
-    st.session_state['last_run'] = None
+# --- 数据抓取与展示逻辑 ---
 
-if refresh or st.session_state['last_run'] is None:
-    st.session_state['last_run'] = datetime.utcnow().isoformat()
+if 'data' not in st.session_state or refresh:
+    with st.spinner('正在同步全球资讯...'):
+        # 1. 抓取路透社
+        reuters = []
+        feed_r = fetch_feed(f'https://news.google.com/rss/search?q=when:24h+site:reuters.com&hl=en-US', use_proxy, proxy_addr)
+        for e in feed_r.entries[:limit]:
+            title = e.get('title', '')
+            reuters.append({
+                'title': title,
+                'title_zh': safe_translate(title),
+                'link': e.get('link', ''),
+                'summary': e.get('summary', '')[:100] + '...',
+                'pub': parse_published(e)
+            })
 
-    # 先使用 scrapers（当启用代理时），否则直接用 RSS
-    reuters_items: List[Dict] = []
-    bloom_items: List[Dict] = []
-    musk_items: List[Dict] = []
+        # 2. 抓取彭博社
+        bloomberg = []
+        feed_b = fetch_feed(f'https://news.google.com/rss/search?q=when:24h+site:bloomberg.com&hl=en-US', use_proxy, proxy_addr)
+        for e in feed_b.entries[:limit]:
+            title = e.get('title', '')
+            bloomberg.append({
+                'title': title,
+                'title_zh': safe_translate(title),
+                'link': e.get('link', ''),
+                'summary': e.get('summary', '')[:100] + '...',
+                'pub': parse_published(e)
+            })
 
-    # Reuters
-    if use_proxy:
-        try:
-            raw = reuters_bot.fetch_reuters_latest(proxy=proxy, limit=limit)
-            # raw 是 (title, link)
-            # 为取得发布时间，拉取 Google News feed 并匹配 title
-            feed = fetch_feed('https://news.google.com/rss/search?q=when:24h+site:reuters.com&hl=en-US', use_proxy, proxy)
-            feed_map = {entry.get('title',''): parse_published(entry) for entry in feed.entries}
-            feed_summary = {entry.get('title',''): entry.get('summary','') or entry.get('description','') for entry in feed.entries}
-            for title, link in raw:
-                published = feed_map.get(title, '')
-                summary = feed_summary.get(title, '')
-                reuters_items.append({'source': 'reuters', 'title': title, 'link': link, 'published': published, 'summary': summary})
-        except Exception:
-            reuters_items = []
-    else:
-        feed = fetch_feed('https://news.google.com/rss/search?q=when:24h+site:reuters.com&hl=en-US', use_proxy, proxy)
-        for entry in feed.entries[:limit]:
-            title = entry.get('title','')
-            link = entry.get('link','')
-            published = parse_published(entry)
-            summary = entry.get('summary','') or entry.get('description','')
-            reuters_items.append({'source': 'reuters', 'title': title, 'link': link, 'published': published, 'summary': summary})
+        # 3. 抓取马斯克动态 (Google News 回退方案)
+        musk = []
+        feed_m = fetch_feed(f'https://news.google.com/rss/search?q=Elon+Musk+when:24h&hl=en-US', use_proxy, proxy_addr)
+        for e in feed_m.entries[:limit]:
+            title = e.get('title', '')
+            musk.append({
+                'title': title,
+                'title_zh': safe_translate(title),
+                'link': e.get('link', ''),
+                'pub': parse_published(e)
+            })
 
-    # Bloomberg
-    if use_proxy:
-        try:
-            raw = bloomberg_bot.fetch_bloomberg_latest(proxy=proxy, limit=limit)
-            feed = fetch_feed('https://news.google.com/rss/search?q=when:24h+site:bloomberg.com&hl=en-US', use_proxy, proxy)
-            feed_map = {entry.get('title',''): parse_published(entry) for entry in feed.entries}
-            for it in raw:
-                title = it.get('title','')
-                link = it.get('link','')
-                summary = it.get('summary','')
-                published = feed_map.get(title, '')
-                bloom_items.append({'source': 'bloomberg', 'title': title, 'link': link, 'published': published, 'summary': summary})
-        except Exception:
-            bloom_items = []
-    else:
-        feed = fetch_feed('https://news.google.com/rss/search?q=when:24h+site:bloomberg.com&hl=en-US', use_proxy, proxy)
-        for entry in feed.entries[:limit]:
-            title = entry.get('title','')
-            link = entry.get('link','')
-            published = parse_published(entry)
-            summary = entry.get('summary','') or entry.get('description','')
-            bloom_items.append({'source': 'bloomberg', 'title': title, 'link': link, 'published': published, 'summary': summary})
+        st.session_state['data'] = {'reuters': reuters, 'bloomberg': bloomberg, 'musk': musk, 'time': datetime.now().strftime('%H:%M:%S')}
 
-    # Musk
-    try:
-        raw = x_musk_bot.fetch_musk_latest(proxy=proxy if use_proxy else None, limit=limit) if use_proxy else x_musk_bot.fetch_musk_latest(proxy='', limit=limit)
-    except Exception:
-        raw = []
-    # raw 是列表字符串，可能包含链接
-    for t in raw:
-        link = ''
-        title = t
-        if t.endswith(')') and '(' in t:
-            idx = t.rfind('(')
-            possible_link = t[idx+1:-1].strip()
-            if possible_link.startswith('http'):
-                link = possible_link
-                title = t[:idx].strip()
-        musk_items.append({'source': 'musk', 'title': title, 'link': link, 'published': ''})
+# 展示界面
+data = st.session_state['data']
+st.caption(f"数据更新于: {data['time']}")
 
-    # 翻译所有板块标题（马斯克/路透社/彭博社）为中文
-    reuters_titles = [i['title'] for i in reuters_items]
-    bloom_titles = [i['title'] for i in bloom_items]
-    musk_titles = [i['title'] for i in musk_items]
-    trans_reuters = translate_list(reuters_titles)
-    trans_bloom = translate_list(bloom_titles)
-    trans_musk = translate_list(musk_titles)
-    for i, it in enumerate(reuters_items):
-        it['title_zh'] = trans_reuters[i] if i < len(trans_reuters) else ''
-    for i, it in enumerate(bloom_items):
-        it['title_zh'] = trans_bloom[i] if i < len(trans_bloom) else ''
-    for i, it in enumerate(musk_items):
-        it['title_zh'] = trans_musk[i] if i < len(trans_musk) else ''
-
-    # 保存到 session
-    st.session_state['reuters'] = reuters_items
-    st.session_state['bloomberg'] = bloom_items
-    st.session_state['musk'] = musk_items
-
-else:
-    reuters_items = st.session_state.get('reuters', [])
-    bloom_items = st.session_state.get('bloomberg', [])
-    musk_items = st.session_state.get('musk', [])
-
-st.markdown(f"**上次抓取时间:** {st.session_state.get('last_run','-')}")
-
-# 马斯克卡片（若有），显示中文大标题及原文小字
-if musk_items:
-        st.subheader('马斯克最新动态')
-        for item in musk_items:
-                title = item.get('title','')
-                title_zh = item.get('title_zh','')
-                link = item.get('link','')
-                pub = item.get('published','')
-                card = f"""
-                <div class='news-card'>
-                    <a href='{link or '#'}' target='_blank'>{title_zh or title}</a>
-                    <div class='orig-title'>{title if title_zh else ''}</div>
-                    <div class='news-meta'>{'· ' + pub if pub else ''}</div>
-                </div>
-                """
-                st.markdown(card, unsafe_allow_html=True)
-
-# 分区：路透社 与 彭博社（卡片式）
-st.header('要闻')
-
-st.markdown('<div style="display:flex; flex-direction:column; gap:8px;">', unsafe_allow_html=True)
-
-# Reuters 列表
-if reuters_items:
-    st.markdown('<h3 class="section-header">路透社</h3>', unsafe_allow_html=True)
-    for item in reuters_items:
-        title = item.get('title','')
-        title_zh = item.get('title_zh','')
-        link = item.get('link','')
-        pub = item.get('published','')
-        display_title = title_zh or title
-        card = f"""
+# 马斯克板块
+if data['musk']:
+    st.markdown('<div class="section-header">马斯克动态</div>', unsafe_allow_html=True)
+    for item in data['musk']:
+        st.markdown(f"""
         <div class='news-card'>
-            <a href='{link}' target='_blank'>{display_title}</a>
-            <div class='orig-title'>{title if title_zh else ''}</div>
-            <div class='news-summary'>{item.get('summary','')}</div>
-            <div class='news-meta'>{pub}</div>
+            <a href='{item['link']}' target='_blank'>{item['title_zh']}</a>
+            <div class='orig-title'>{item['title']}</div>
+            <div class='news-meta'>{item['pub']}</div>
         </div>
-        """
-        st.markdown(card, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-# Bloomberg 列表
-if bloom_items:
-        st.markdown('<h3 class="section-header" style="margin-top:12px">彭博社</h3>', unsafe_allow_html=True)
-        for item in bloom_items:
-                title = item.get('title','')
-                title_zh = item.get('title_zh','')
-                link = item.get('link','')
-                pub = item.get('published','')
-                summary = item.get('summary','')
-                display_title = title_zh or title
-                card = f"""
-                <div class='news-card'>
-                    <a href='{link or '#'}' target='_blank'>{display_title}</a>
-                    <div class='orig-title'>{title if title_zh else ''}</div>
-                    <div class='news-summary'>{summary}</div>
-                    <div class='news-meta'>{pub}</div>
-                </div>
-                """
-                st.markdown(card, unsafe_allow_html=True)
+# 路透社与彭博社
+st.markdown('<div class="section-header">全球要闻</div>', unsafe_allow_html=True)
 
-st.markdown('</div>', unsafe_allow_html=True)
-st.markdown('\n---\n')
-st.write('数据来自 Google News RSS 与 Nitter / scrapers（如启用代理）')
+for source_name, items in [('路透社', data['reuters']), ('彭博社', data['bloomberg'])]:
+    st.write(f"**{source_name}**")
+    for item in items:
+        st.markdown(f"""
+        <div class='news-card'>
+            <a href='{item['link']}' target='_blank'>{item['title_zh']}</a>
+            <div class='orig-title'>{item['title']}</div>
+            <div class='news-summary'>{item['summary']}</div>
+            <div class='news-meta'>{item['pub']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
 st.markdown('</div>', unsafe_allow_html=True)
