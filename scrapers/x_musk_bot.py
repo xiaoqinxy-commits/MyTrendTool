@@ -3,14 +3,14 @@
 目标：https://nitter.net/elonmusk
 返回推文文本列表（最新在前）。
 """
-from typing import List
+from typing import List, Optional
 import sys
 import requests
 import feedparser
 
 
-def fetch_musk_latest(proxy: str = 'http://127.0.0.1:7897', limit: int = 5) -> List[str]:
-    proxies = {'http': proxy, 'https': proxy}
+def fetch_musk_latest(proxy: Optional[str] = None, limit: int = 5) -> List[str]:
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     nitter_rss_instances = [
@@ -23,7 +23,10 @@ def fetch_musk_latest(proxy: str = 'http://127.0.0.1:7897', limit: int = 5) -> L
     used = None
     for rss in nitter_rss_instances:
         try:
-            r = requests.get(rss, headers=headers, proxies=proxies, timeout=15)
+            if proxies:
+                r = requests.get(rss, headers=headers, proxies=proxies, timeout=15)
+            else:
+                r = requests.get(rss, headers=headers, timeout=15)
         except requests.RequestException as e:
             print(f'[Nitter RSS] 请求 {rss} 失败: {e}', file=sys.stderr)
             continue
@@ -40,7 +43,10 @@ def fetch_musk_latest(proxy: str = 'http://127.0.0.1:7897', limit: int = 5) -> L
         print('[Nitter RSS] 所有实例均无法获取或没有条目，尝试使用 Google News RSS 作为回退。', file=sys.stderr)
         try:
             g_url = 'https://news.google.com/rss/search?q=Elon+Musk&hl=en-US'
-            r = requests.get(g_url, headers=headers, proxies=proxies, timeout=15)
+            if proxies:
+                r = requests.get(g_url, headers=headers, proxies=proxies, timeout=15)
+            else:
+                r = requests.get(g_url, headers=headers, timeout=15)
             if r.status_code == 200:
                 gfeed = feedparser.parse(r.content)
                 tweets = []

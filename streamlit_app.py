@@ -13,7 +13,7 @@ from scrapers import reuters_bot, bloomberg_bot, x_musk_bot
 
 def fetch_feed(url: str, use_proxy: bool, proxy: str):
     headers = {'User-Agent': 'Mozilla/5.0'}
-    if use_proxy:
+    if use_proxy and not os.environ.get('STREAMLIT_RUNTIME_ENV'):
         proxies = {'http': proxy, 'https': proxy}
         try:
             r = requests.get(url, headers=headers, proxies=proxies, timeout=15)

@@ -2,20 +2,23 @@
 通过 Google News RSS 抓取彭博社最近 24 小时的要闻标题。
 使用 requests 拉取 RSS（以便支持代理），然后用 feedparser 解析。
 """
-from typing import List, Dict
+from typing import List, Dict, Optional
 import sys
 import requests
 import feedparser
 
 
-def fetch_bloomberg_latest(proxy: str = 'http://127.0.0.1:7897', limit: int = 5) -> List[Dict[str, str]]:
+def fetch_bloomberg_latest(proxy: Optional[str] = None, limit: int = 5) -> List[Dict[str, str]]:
     """返回列表，每项包含 title, link, summary（若有）。"""
-    proxies = {'http': proxy, 'https': proxy}
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
     url = 'https://news.google.com/rss/search?q=when:24h+site:bloomberg.com&hl=en-US'
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     try:
-        r = requests.get(url, proxies=proxies, headers=headers, timeout=20)
+        if proxies:
+            r = requests.get(url, proxies=proxies, headers=headers, timeout=20)
+        else:
+            r = requests.get(url, headers=headers, timeout=20)
     except requests.RequestException as e:
         print(f'[Bloomberg RSS] 请求失败: {e}', file=sys.stderr)
         return []
